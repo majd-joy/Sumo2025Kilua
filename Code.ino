@@ -1,4 +1,5 @@
 #include <EEPROM.h>
+#include "esp32-hal-cpu.h" // مكتبة لتغيير تردد المعالج
 
 // ===== إعدادات الأجهزة =====
 const int MOTORS[2][2] = {
@@ -169,6 +170,9 @@ void loadAI() {
 
 // ===== setup و loop =====
 void setup() {
+  // ضبط تردد الـ CPU على أقصى سرعة
+  setCpuFrequencyMhz(240);
+
   EEPROM.begin(512);
 
   // إعداد المحركات
