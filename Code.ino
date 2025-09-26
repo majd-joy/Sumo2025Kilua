@@ -7,14 +7,13 @@ const int ML1=25, ML2=26, MR1=32, MR2=33, MPWM1=27, MPWM2=14; // محركات
 
 // ===== متغيرات الذكاء الاصطناعي =====
 float weights[24];           
-float sensors[8];   // 7 حساسات + قيمة مشتقة (زاوية العدو)
+float sensors[8];   // 7 حساسات + قيمة مشتقة (زاوية العدو)         
 float epsilon = 0.2;         
 int wins = 0, battles = 0;   
 
 // ===== متغيرات الانتظار =====
 unsigned long startTime;
 bool started = false;
-int pendingAction = 0; // القرار المحسوب أثناء الانتظار
 
 // ===== متغيرات تجنب الحافة (بدون delay) =====
 bool avoiding = false;
@@ -22,7 +21,7 @@ int avoidStep = 0;
 unsigned long avoidStart = 0;
 
 void setup() {
-  Serial.begin(115200);
+  // Serial.begin(115200); // غير مفعّل
   EEPROM.begin(512);
   
   // إعداد المحركات
@@ -36,54 +35,48 @@ void setup() {
   }
   
   loadAI();  
-  Serial.println("🤖 Smart Sumo Robot Ready! Waiting 5s...");
+  // Serial.println("🤖 Smart Sumo Robot Ready! Waiting 5s...");
   
   startTime = millis(); 
 }
 
 void loop() {
-  // دايمًا اقرأ الحساسات وحسب القرار
-  readSensors();                    
-  pendingAction = aiDecision();     
+  // يقرأ الحساسات ويقرر أثناء الانتظار
+  readSensors();
+  int action = aiDecision();
 
-  // إذا لسا بالانتظار -> لا ينفذ الفعل
+  // انتظار 5 ثواني قبل البدء
   if(!started && millis() - startTime < 5000) {
     motor(0, 0); 
     return;
   }
   started = true;
 
-  // إذا في حالة تجنب الحافة -> يكمل الروتين
+  // إذا كان في حالة تجنب الحافة -> يكمل الروتين
   if(avoiding) {
     handleAvoidEdge();
     return;
   }
 
-  // إذا الحافة مكتشفة -> نفذ روتين التجنب
   if(checkEdge()) { startAvoidEdge(); return; }  
   
-  // نفذ القرار المحسوب مسبقًا
-  executeAction(pendingAction);            
-  
-  float reward = getReward(pendingAction); 
-  learn(pendingAction, reward);            
+  executeAction(action);            
+  float reward = getReward(action); 
+  learn(action, reward);            
 }
 
 // ===== قراءة المستشعرات =====
 void readSensors() {
-  // مستشعرات المسافة
   for(int i=0; i<3; i++) {
     digitalWrite(TRIG[i], HIGH); delayMicroseconds(10); digitalWrite(TRIG[i], LOW);
     float dist = pulseIn(ECHO[i], HIGH, 30000) * 0.034 / 2;
-    sensors[i] = constrain(1.0 - dist/300.0, 0, 1); // قريب = 1, بعيد = 0
+    sensors[i] = constrain(1.0 - dist/300.0, 0, 1); 
   }
   
-  // مستشعرات الخط
   for(int i=0; i<4; i++) {
     sensors[3+i] = analogRead(LINE[i]) / 4095.0;
   }
   
-  // زاوية العدو (مشتقة)
   sensors[7] = (sensors[1] > sensors[2]) ? 0.25 : 0.75; 
 }
 
@@ -111,12 +104,12 @@ int aiDecision() {
 // ===== تنفيذ الأفعال =====
 void executeAction(int action) {
   switch(action) {
-    case 0: motor(0, 0);      break; // توقف
-    case 1: motor(255, 255);  break; // أمام سريع
-    case 2: motor(150, 255);  break; // قطري يسار
-    case 3: motor(255, 150);  break; // قطري يمين
-    case 4: motor(-100, 100); break; // دوران
-    case 5: motor(-200, -200);break; // تراجع
+    case 0: motor(0, 0);      break; 
+    case 1: motor(255, 255);  break; 
+    case 2: motor(150, 255);  break; 
+    case 3: motor(255, 150);  break; 
+    case 4: motor(-100, 100); break; 
+    case 5: motor(-200, -200);break; 
   }
 }
 
@@ -131,7 +124,7 @@ void motor(int left, int right) {
 // ===== حساب المكافأة =====
 float getReward(int action) {
   float reward = 0;
-  reward += sensors[0] * 10; // مكافأة للاقتراب
+  reward += sensors[0] * 10;
   
   if(action == 2 || action == 3) {
     if(sensors[0] > 0.5) reward += 20; 
@@ -223,8 +216,8 @@ void loadAI() {
   EEPROM.get(108, battles);
   
   if(isnan(epsilon) || epsilon > 1.0) epsilon = 0.2;
-  if(battles > 0) {
-    Serial.printf("📊 Loaded: %d battles, %d wins (%.1f%%)\n", 
-                  battles, wins, (float)wins/battles*100);
-  }
+  // if(battles > 0) {
+  //   Serial.printf("📊 Loaded: %d battles, %d wins (%.1f%%)\n", 
+  //                 battles, wins, (float)wins/battles*100);
+  // }
 }
