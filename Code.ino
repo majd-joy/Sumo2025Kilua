@@ -6,10 +6,20 @@ const int LINE[] = {36, 39, 34, 35};                        // 4 مستشعرا�
 const int ML1=25, ML2=26, MR1=32, MR2=33, MPWM1=27, MPWM2=14; // محركات
 
 // ===== متغيرات الذكاء الاصطناعي =====
-float weights[24];           // أوزان بسيطة للشبكة (8 inputs × 3 hidden)
-float sensors[8];            // حالة المستشعرات
-float epsilon = 0.2;         // معامل الاستطلاع
-int wins = 0, battles = 0;   // إحصائيات
+float weights[24];           
+float sensors[8];   // 7 حساسات + قيمة مشتقة (زاوية العدو)
+float epsilon = 0.2;         
+int wins = 0, battles = 0;   
+
+// ===== متغيرات الانتظار =====
+unsigned long startTime;
+bool started = false;
+int pendingAction = 0; // القرار المحسوب أثناء الانتظار
+
+// ===== متغيرات تجنب الحافة (بدون delay) =====
+bool avoiding = false;
+int avoidStep = 0;
+unsigned long avoidStart = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -25,49 +35,64 @@ void setup() {
     pinMode(ECHO[i], INPUT);
   }
   
-  loadAI();  // تحميل الذكاء المحفوظ
-  Serial.println("🤖 Smart Sumo Robot Ready!");
+  loadAI();  
+  Serial.println("🤖 Smart Sumo Robot Ready! Waiting 5s...");
+  
+  startTime = millis(); 
 }
 
 void loop() {
-  readSensors();                    // قراءة المستشعرات
-  if(checkEdge()) { avoidEdge(); return; }  // تجنب الحافة
+  // دايمًا اقرأ الحساسات وحسب القرار
+  readSensors();                    
+  pendingAction = aiDecision();     
+
+  // إذا لسا بالانتظار -> لا ينفذ الفعل
+  if(!started && millis() - startTime < 5000) {
+    motor(0, 0); 
+    return;
+  }
+  started = true;
+
+  // إذا في حالة تجنب الحافة -> يكمل الروتين
+  if(avoiding) {
+    handleAvoidEdge();
+    return;
+  }
+
+  // إذا الحافة مكتشفة -> نفذ روتين التجنب
+  if(checkEdge()) { startAvoidEdge(); return; }  
   
-  int action = aiDecision();        // قرار ذكي
-  executeAction(action);            // تنفيذ الفعل
+  // نفذ القرار المحسوب مسبقًا
+  executeAction(pendingAction);            
   
-  float reward = getReward(action); // حساب المكافأة
-  learn(action, reward);            // التعلم
-  
-  delay(100);
+  float reward = getReward(pendingAction); 
+  learn(pendingAction, reward);            
 }
 
 // ===== قراءة المستشعرات =====
 void readSensors() {
-  // مستشعرات المسافة (0-2)
+  // مستشعرات المسافة
   for(int i=0; i<3; i++) {
     digitalWrite(TRIG[i], HIGH); delayMicroseconds(10); digitalWrite(TRIG[i], LOW);
     float dist = pulseIn(ECHO[i], HIGH, 30000) * 0.034 / 2;
     sensors[i] = constrain(1.0 - dist/300.0, 0, 1); // قريب = 1, بعيد = 0
   }
   
-  // مستشعرات الخط (3-6)
+  // مستشعرات الخط
   for(int i=0; i<4; i++) {
     sensors[3+i] = analogRead(LINE[i]) / 4095.0;
   }
   
-  // زاوية العدو (7)
-  sensors[7] = (sensors[1] > sensors[2]) ? 0.25 : 0.75; // يسار أم يمين
+  // زاوية العدو (مشتقة)
+  sensors[7] = (sensors[1] > sensors[2]) ? 0.25 : 0.75; 
 }
 
 // ===== اتخاذ القرار الذكي =====
 int aiDecision() {
-  // استطلاع عشوائي أم استغلال الذكاء؟
   if(random(1000) < epsilon * 1000) {
-    return random(0, 6); // فعل عشوائي
+    return random(0, 6); 
   }
   
-  // حساب درجات الأفعال باستخدام الشبكة العصبية
   float scores[6] = {0};
   for(int action=0; action<6; action++) {
     for(int i=0; i<8; i++) {
@@ -75,7 +100,6 @@ int aiDecision() {
     }
   }
   
-  // اختيار أفضل فعل
   int bestAction = 0;
   for(int i=1; i<6; i++) {
     if(scores[i] > scores[bestAction]) bestAction = i;
@@ -97,11 +121,9 @@ void executeAction(int action) {
 }
 
 void motor(int left, int right) {
-  // المحرك الأيسر
   digitalWrite(ML1, left > 0); digitalWrite(ML2, left < 0);
   analogWrite(MPWM1, abs(left));
   
-  // المحرك الأيمن
   digitalWrite(MR1, right > 0); digitalWrite(MR2, right < 0);
   analogWrite(MPWM2, abs(right));
 }
@@ -109,38 +131,29 @@ void motor(int left, int right) {
 // ===== حساب المكافأة =====
 float getReward(int action) {
   float reward = 0;
+  reward += sensors[0] * 10; // مكافأة للاقتراب
   
-  // مكافأة للاقتراب من العدو
-  reward += sensors[0] * 10;
-  
-  // مكافأة خاصة للهجمات القطرية
   if(action == 2 || action == 3) {
-    if(sensors[0] > 0.5) reward += 20; // عدو قريب
+    if(sensors[0] > 0.5) reward += 20; 
   }
   
-  // عقوبة للحافة
   float minEdge = min(min(sensors[3], sensors[4]), min(sensors[5], sensors[6]));
-  if(minEdge > 0.8) reward -= 30; // قريب من الحافة
+  if(minEdge > 0.8) reward -= 30; 
   
   return reward;
 }
 
-// ===== التعلم البسيط =====
+// ===== التعلم =====
 void learn(int action, float reward) {
-  // تحديث بسيط للأوزان
   float learningRate = 0.01;
   for(int i=0; i<8; i++) {
     weights[i*3 + (action%3)] += learningRate * reward * sensors[i];
-    
-    // تحديد حدود الأوزان
     weights[i*3 + (action%3)] = constrain(weights[i*3 + (action%3)], -2.0, 2.0);
   }
   
-  // تقليل الاستطلاع تدريجياً
   epsilon *= 0.9999;
   if(epsilon < 0.05) epsilon = 0.05;
   
-  // حفظ كل فترة
   static int saveCounter = 0;
   if(++saveCounter > 100) {
     saveAI();
@@ -148,19 +161,45 @@ void learn(int action, float reward) {
   }
 }
 
-// ===== تجنب الحافة =====
+// ===== تجنب الحافة بدون delay =====
 bool checkEdge() {
   for(int i=3; i<7; i++) {
-    if(sensors[i] > 0.8) return true; // حافة مكتشفة
+    if(sensors[i] > 0.8) return true; 
   }
   return false;
 }
 
-void avoidEdge() {
-  motor(0, 0); delay(50);           // توقف
-  motor(-255, -255); delay(200);    // تراجع
-  motor(-150, 150); delay(300);     // دوران
-  motor(0, 0); delay(100);          // توقف
+void startAvoidEdge() {
+  avoiding = true;
+  avoidStep = 0;
+  avoidStart = millis();
+  motor(0, 0); // أول شيء يوقف
+}
+
+void handleAvoidEdge() {
+  unsigned long now = millis();
+  switch(avoidStep) {
+    case 0: 
+      if(now - avoidStart >= 50) {
+        motor(-255, -255); 
+        avoidStep = 1; 
+        avoidStart = now;
+      }
+      break;
+    case 1: 
+      if(now - avoidStart >= 200) {
+        motor(-150, 150); 
+        avoidStep = 2; 
+        avoidStart = now;
+      }
+      break;
+    case 2: 
+      if(now - avoidStart >= 300) {
+        motor(0, 0); 
+        avoiding = false; // خلص
+      }
+      break;
+  }
 }
 
 // ===== حفظ وتحميل الذكاء =====
@@ -177,7 +216,7 @@ void saveAI() {
 void loadAI() {
   for(int i=0; i<24; i++) {
     EEPROM.get(i*4, weights[i]);
-    if(isnan(weights[i])) weights[i] = random(-100, 100) / 100.0; // قيمة افتراضية
+    if(isnan(weights[i])) weights[i] = random(-100, 100) / 100.0; 
   }
   EEPROM.get(100, epsilon);
   EEPROM.get(104, wins);
