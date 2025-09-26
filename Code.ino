@@ -1,13 +1,17 @@
 #include <EEPROM.h>
 
-// ===== إعدادات الأجهزة =====
-const int TRIG[] = {2, 4, 16}, ECHO[] = {15, 17, 5};        // 3 مستشعرات مسافة
-const int LINE[] = {36, 39, 34, 35};                        // 4 مستشعرات خط
-const int ML1=25, ML2=26, MR1=32, MR2=33, MPWM1=27, MPWM2=14; // محركات
+// ===== إعدادات الأجهزة (تم تعديل البنز) =====
+const int MOTORS[2][2] = {
+  {18, 4},   // المحرك الأول (RPWM1, LPWM1)
+  {21, 19}   // المحرك الثاني (RPWM2, LPWM2)
+};
+
+// الحساسات (أمامي, يمين, يسار)
+const int SENSORS[3] = {32, 33, 25};
 
 // ===== متغيرات الذكاء الاصطناعي =====
 float weights[24];           
-float sensors[8];   // 7 حساسات + قيمة مشتقة (زاوية العدو)         
+float sensorsValues[8];   // 7 حساسات + قيمة مشتقة (زاوية العدو)         
 float epsilon = 0.2;         
 int wins = 0, battles = 0;   
 
@@ -20,26 +24,29 @@ bool avoiding = false;
 int avoidStep = 0;
 unsigned long avoidStart = 0;
 
+// ====== Setup ======
 void setup() {
   // Serial.begin(115200); // غير مفعّل
   EEPROM.begin(512);
   
   // إعداد المحركات
-  pinMode(ML1, OUTPUT); pinMode(ML2, OUTPUT); pinMode(MPWM1, OUTPUT);
-  pinMode(MR1, OUTPUT); pinMode(MR2, OUTPUT); pinMode(MPWM2, OUTPUT);
-  
-  // إعداد مستشعرات المسافة
-  for(int i=0; i<3; i++) {
-    pinMode(TRIG[i], OUTPUT); 
-    pinMode(ECHO[i], INPUT);
+  for (int i = 0; i < 2; i++) {
+    pinMode(MOTORS[i][0], OUTPUT);
+    pinMode(MOTORS[i][1], OUTPUT);
   }
-  
+
+  // إعداد الحساسات
+  for (int i = 0; i < 3; i++) {
+    pinMode(SENSORS[i], INPUT);
+  }
+
   loadAI();  
   // Serial.println("🤖 Smart Sumo Robot Ready! Waiting 5s...");
   
   startTime = millis(); 
 }
 
+// ====== Loop ======
 void loop() {
   // يقرأ الحساسات ويقرر أثناء الانتظار
   readSensors();
@@ -65,19 +72,17 @@ void loop() {
   learn(action, reward);            
 }
 
-// ===== قراءة المستشعرات =====
+// ===== قراءة الحساسات =====
 void readSensors() {
   for(int i=0; i<3; i++) {
-    digitalWrite(TRIG[i], HIGH); delayMicroseconds(10); digitalWrite(TRIG[i], LOW);
-    float dist = pulseIn(ECHO[i], HIGH, 30000) * 0.034 / 2;
-    sensors[i] = constrain(1.0 - dist/300.0, 0, 1); 
+    sensorsValues[i] = analogRead(SENSORS[i]) / 4095.0;
   }
   
-  for(int i=0; i<4; i++) {
-    sensors[3+i] = analogRead(LINE[i]) / 4095.0;
-  }
-  
-  sensors[7] = (sensors[1] > sensors[2]) ? 0.25 : 0.75; 
+  // باقي الحساسات كما هي (من خط الحلبة)
+  // هنا إذا تحب تضيف 4 حساسات خطوط الحلبة القديمة يمكن تعديلها لاحقاً
+
+  // زاوية العدو
+  sensorsValues[7] = (sensorsValues[1] > sensorsValues[2]) ? 0.25 : 0.75; 
 }
 
 // ===== اتخاذ القرار الذكي =====
@@ -89,7 +94,7 @@ int aiDecision() {
   float scores[6] = {0};
   for(int action=0; action<6; action++) {
     for(int i=0; i<8; i++) {
-      scores[action] += sensors[i] * weights[i*3 + (action%3)];
+      scores[action] += sensorsValues[i] * weights[i*3 + (action%3)];
     }
   }
   
@@ -113,24 +118,35 @@ void executeAction(int action) {
   }
 }
 
+// ===== التحكم بالموتورات =====
 void motor(int left, int right) {
-  digitalWrite(ML1, left > 0); digitalWrite(ML2, left < 0);
-  analogWrite(MPWM1, abs(left));
-  
-  digitalWrite(MR1, right > 0); digitalWrite(MR2, right < 0);
-  analogWrite(MPWM2, abs(right));
+  if(left >= 0) {
+    analogWrite(MOTORS[0][0], left);
+    analogWrite(MOTORS[0][1], 0);
+  } else {
+    analogWrite(MOTORS[0][0], 0);
+    analogWrite(MOTORS[0][1], -left);
+  }
+
+  if(right >= 0) {
+    analogWrite(MOTORS[1][0], right);
+    analogWrite(MOTORS[1][1], 0);
+  } else {
+    analogWrite(MOTORS[1][0], 0);
+    analogWrite(MOTORS[1][1], -right);
+  }
 }
 
 // ===== حساب المكافأة =====
 float getReward(int action) {
   float reward = 0;
-  reward += sensors[0] * 10;
+  reward += sensorsValues[0] * 10;
   
   if(action == 2 || action == 3) {
-    if(sensors[0] > 0.5) reward += 20; 
+    if(sensorsValues[0] > 0.5) reward += 20; 
   }
   
-  float minEdge = min(min(sensors[3], sensors[4]), min(sensors[5], sensors[6]));
+  float minEdge = min(min(sensorsValues[3], sensorsValues[4]), min(sensorsValues[5], sensorsValues[6]));
   if(minEdge > 0.8) reward -= 30; 
   
   return reward;
@@ -140,7 +156,7 @@ float getReward(int action) {
 void learn(int action, float reward) {
   float learningRate = 0.01;
   for(int i=0; i<8; i++) {
-    weights[i*3 + (action%3)] += learningRate * reward * sensors[i];
+    weights[i*3 + (action%3)] += learningRate * reward * sensorsValues[i];
     weights[i*3 + (action%3)] = constrain(weights[i*3 + (action%3)], -2.0, 2.0);
   }
   
@@ -157,7 +173,7 @@ void learn(int action, float reward) {
 // ===== تجنب الحافة بدون delay =====
 bool checkEdge() {
   for(int i=3; i<7; i++) {
-    if(sensors[i] > 0.8) return true; 
+    if(sensorsValues[i] > 0.8) return true; 
   }
   return false;
 }
@@ -166,7 +182,7 @@ void startAvoidEdge() {
   avoiding = true;
   avoidStep = 0;
   avoidStart = millis();
-  motor(0, 0); // أول شيء يوقف
+  motor(0, 0);
 }
 
 void handleAvoidEdge() {
@@ -189,7 +205,7 @@ void handleAvoidEdge() {
     case 2: 
       if(now - avoidStart >= 300) {
         motor(0, 0); 
-        avoiding = false; // خلص
+        avoiding = false;
       }
       break;
   }
@@ -216,8 +232,4 @@ void loadAI() {
   EEPROM.get(108, battles);
   
   if(isnan(epsilon) || epsilon > 1.0) epsilon = 0.2;
-  // if(battles > 0) {
-  //   Serial.printf("📊 Loaded: %d battles, %d wins (%.1f%%)\n", 
-  //                 battles, wins, (float)wins/battles*100);
-  // }
 }
